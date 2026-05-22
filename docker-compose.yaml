@@ -1,0 +1,54 @@
+# =============================================================================
+# WhatsBotAI Core - Local Development Stack
+#
+# Provides PostgreSQL 16 with pgvector extension for local development.
+# Used only in the 'dev' Spring profile. Production uses Neon Postgres.
+#
+# Start:  docker compose up -d
+# Stop:   docker compose down
+# Reset:  docker compose down -v   (deletes all data)
+# =============================================================================
+
+services:
+
+  # ─── PostgreSQL 16 with pgvector ───────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: whatsbotai-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=whatsbotai
+      - POSTGRES_USER=whatsbotai
+      - POSTGRES_PASSWORD=whatsbotai_local_dev
+      - PGDATA=/var/lib/postgresql/data/pgdata
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U whatsbotai -d whatsbotai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── pgAdmin (optional web-based DB explorer) ──────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: whatsbotai-pgadmin
+    restart: unless-stopped
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@whatsbotai.local
+      - PGADMIN_DEFAULT_PASSWORD=admin
+      - PGADMIN_CONFIG_SERVER_MODE=False
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+    name: whatsbotai_postgres_data

@@ -1,0 +1,89 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# WhatsBotAI Core - Application Configuration
+#
+# Reads sensitive values from environment variables (see .env file).
+# Profile-aware: 'dev' uses Neon Postgres, 'prod' will be configured later.
+# ─────────────────────────────────────────────────────────────────────────────
+
+spring:
+
+  config:
+    import:
+    - optional:file:.env[.properties]
+
+  application:
+    name: whatsbotai-core
+
+  profiles:
+    active:
+    - dev
+
+  # ─── Database Connection ───────────────────────────────────────────────────
+  datasource:
+    url: ${DATABASE_URL}
+    username: ${DATABASE_USERNAME}
+    password: ${DATABASE_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000
+      idle-timeout: 600000
+
+  # ─── JPA / Hibernate ───────────────────────────────────────────────────────
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        "[format_sql]": true
+
+        jdbc:
+          "[time_zone]": UTC
+
+    show-sql: true
+    open-in-view: false
+
+  # ─── Flyway Migrations ─────────────────────────────────────────────────────
+  flyway:
+    enabled: true
+    locations:
+    - classpath:db/migration
+
+    baseline-on-migrate: true
+    validate-on-migrate: true
+
+# ─── Server Configuration ────────────────────────────────────────────────────
+
+  web:
+    error:
+      include-message: always
+      include-binding-errors: always
+
+server:
+  port: 8080
+
+# ─── Actuator (health, metrics, info endpoints) ──────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include:
+        - health
+        - info
+        - metrics
+
+  endpoint:
+    health:
+      show-details: when-authorized
+
+# ─── Logging ─────────────────────────────────────────────────────────────────
+logging:
+  level:
+    root: INFO
+    '[com.whatsbotai]': DEBUG
+    '[org.hibernate.sql]': INFO
+    '[org.flywaydb]': INFO
