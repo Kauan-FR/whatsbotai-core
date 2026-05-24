@@ -1,4 +1,4 @@
-# =============================================================================
+# ═════════════════════════════════════════════════════════════════════════════
 # WhatsBotAI Core - Local Development Stack
 #
 # Provides PostgreSQL 16 with pgvector extension for local development.
@@ -7,7 +7,7 @@
 # Start:  docker compose up -d
 # Stop:   docker compose down
 # Reset:  docker compose down -v   (deletes all data)
-# =============================================================================
+# ═════════════════════════════════════════════════════════════════════════════
 
 services:
 
