@@ -40,9 +40,10 @@ services:
     container_name: whatsbotai-pgadmin
     restart: unless-stopped
     environment:
-      - PGADMIN_DEFAULT_EMAIL=admin@whatsbotai.local
+      - PGADMIN_DEFAULT_EMAIL=admin@whatsbotai.dev
       - PGADMIN_DEFAULT_PASSWORD=admin
       - PGADMIN_CONFIG_SERVER_MODE=False
+      - PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED=False
     ports:
       - "5050:80"
     depends_on:

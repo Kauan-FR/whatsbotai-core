@@ -1,4 +1,4 @@
-CREATE TABLE tb_tenant {
+CREATE TABLE tb_tenant (
     id BIGSERIAL PRIMARY KEY,
     name VARCHAR(150) NOT NULL,
     owner_email VARCHAR(255) NOT NULL UNIQUE,
@@ -14,7 +14,7 @@ CREATE TABLE tb_tenant {
 
     CONSTRAINT chk_tenant_status CHECK (status IN ('TRIAL', 'ACTIVE', 'SUSPENDED', 'CANCELLED', 'EXPIRED')),
     CONSTRAINT chk_tenant_plan CHECK (plan IN ('STARTER', 'PRO', 'BUSINESS'))
-};
+);
 
 -- Index for fast lookup by email (login)
 CREATE INDEX idx_tenant_owner_email ON tb_tenant(owner_email);
