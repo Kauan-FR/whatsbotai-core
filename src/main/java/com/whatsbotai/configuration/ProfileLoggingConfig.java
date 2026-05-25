@@ -7,6 +7,13 @@ import org.springframework.context.ApplicationListener;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
+import java.lang.management.ManagementFactory;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
+import java.util.stream.Collectors;
+
 /**
  * Logs the active Spring profile(s) when the application is ready.
  *
@@ -33,28 +40,111 @@ public class ProfileLoggingConfig implements ApplicationListener<ApplicationRead
 
     private static final Logger log = LoggerFactory.getLogger(ProfileLoggingConfig.class);
 
+    private static final DateTimeFormatter TZ_OFFSET_TIME_FORMATTER = DateTimeFormatter.ofPattern("XXX");
+
     @Override
     public void onApplicationEvent(ApplicationReadyEvent event) {
         Environment env = event.getApplicationContext().getEnvironment();
 
-        String[] activeProfiles = env.getActiveProfiles();
-        String[] defaultProfiles = env.getDefaultProfiles();
         String applicationName = env.getProperty("spring.application.name", "unknown");
         String serverPort = env.getProperty("server.port", "unknown");
         String datasourceUrl = env.getProperty("spring.datasource.url", "not-configured");
+        String activeProfilesStr = formatActiveProfile(env);
+        String actuatorEndpoints = formatActuatorEndpoints(env);
 
-        String activeProfilesStr = activeProfiles.length == 0
-                ? "NONE (using defaults: " + String.join(", ", defaultProfiles) + ")"
-                : String.join(", ", activeProfiles);
+        // Runtime info (JVM, memory, PID, timezone, uptime)
+        String jvmInfo = formatJvmInfo();
+        String memoryInfo = formatMemoryInfo();
+        String timezoneInfo = formatTimezoneString();
+        long pid = ProcessHandle.current().pid();
+        double startupSeconds = ManagementFactory.getRuntimeMXBean().getUptime() / 1000.0;
 
         log.info("");
         log.info("═══════════════════════════════════════════════════════════════════");
-        log.info("  Application: {}", applicationName);
-        log.info("  Active Profile(s): {}", activeProfilesStr);
-        log.info("  Server Port: {}", serverPort);
-        log.info("  Datasource: {}", maskDatasourceUrl(datasourceUrl));
+        log.info("  Application       : {}", applicationName);
+        log.info("  Active Profile(s) : {}", activeProfilesStr);
+        log.info("  Server Port       : {}", serverPort);
+        log.info("  Datasource        : {}", maskDatasourceUrl(datasourceUrl));
+        log.info("  ----------------------------------------------------------------");
+        log.info("  JVM               : {}", jvmInfo);
+        log.info("  Memory            : {}", memoryInfo);
+        log.info("  Timezone          : {}", timezoneInfo);
+        log.info("  Process ID        : {}", pid);
+        log.info("  Startup Time      : {} s", String.format("%.3f", startupSeconds));
+        log.info("  ----------------------------------------------------------------");
+        log.info("  Actuator          : {}", actuatorEndpoints);
         log.info("═══════════════════════════════════════════════════════════════════");
         log.info("");
+    }
+
+    /**
+     * Formats active profiles, warning if more than one is active (which is
+     * usually unintentional and can lead to subtle config bugs).
+     */
+    private String formatActiveProfile(Environment env) {
+        String[] activeProfiles = env.getActiveProfiles();
+
+        if (activeProfiles.length == 0) {
+            return "NONE (using defaults: " + String.join(", ", env.getDefaultProfiles()) + ")";
+        }
+        if (activeProfiles.length > 1) {
+            return String.join(", ", activeProfiles) + "  ⚠ MULTIPLE PROFILES ACTIVE";
+        }
+        return activeProfiles[0];
+    }
+
+    /**
+     * Formats JVM vendor and version.
+     * Example: {@code OpenJDK 21.0.5 (Eclipse Adoptium)}
+     */
+    private String formatJvmInfo() {
+        String vmName = System.getProperty("java.vm.name", "unknown");
+        String version = System.getProperty("java.version", "unknown");
+        String vendor = System.getProperty("java.vendor", "unknown");
+        return String.format("| VM Name: %s | Version: %s | Vendor: (%s) |", vmName, version, vendor);
+    }
+
+    /**
+     * Formats heap memory: used / total / max (all in MB).
+     * Useful for detecting memory pressure during startup.
+     */
+    private String formatMemoryInfo() {
+        Runtime runtime = Runtime.getRuntime();
+        long used = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024);
+        long total = runtime.totalMemory() / (1024 * 1024);
+        long max = runtime.maxMemory() / (1024 * 1024);
+        return String.format("| %d MB used | %d MB total | %d MB max |", used, total, max);
+    }
+
+    /**
+     * Formats system timezone with UTC offset.
+     * Example: {@code America/Recife (UTC-03:00)}
+     */
+    private String formatTimezoneString() {
+        ZoneId zone = ZoneId.systemDefault();
+        String offset = ZonedDateTime.now(zone).format(TZ_OFFSET_TIME_FORMATTER);
+        return String.format("%s (UTC%s)", zone.getId(), offset);
+    }
+
+    /**
+     * Reads exposed Actuator endpoints from configuration.
+     * Returns "none" if Actuator isn't configured.
+     */
+    private String formatActuatorEndpoints(Environment env) {
+        String exposed = env.getProperty("management.endpoints.web.exposure.include");
+
+        if (exposed == null || exposed.isBlank()) {
+            return "none";
+        }
+
+        // Comma-separated string from YAML may have whitespace — normalize.
+        String normalized = Arrays.stream(exposed.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.joining(", "));
+
+        String basePath = env.getProperty("management.endpoints.web.base-path", "/actuator");
+        return String.format("%s (base path: %s)", normalized, basePath);
     }
 
     /**
