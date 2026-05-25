@@ -1,0 +1,38 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# Profile: dev-local
+# Ambiente: Desenvolvimento no trabalho (IFS Reitoria), usando Postgres nativo
+# Motivação: A rede do IFS bloqueia Docker registry e porta 5432 do Neon,
+#            inviabilizando tanto o profile dev-docker quanto prod.
+#            Postgres nativo instalado diretamente no Windows resolve.
+# Ativação: ./gradlew bootRun --args='--spring.profiles.active=dev-local'
+# ═════════════════════════════════════════════════════════════════════════════
+
+spring:
+
+    # ─── Datasource (Postgres nativo no Windows) ──────────────────────────────
+    datasource:
+        url: ${DATABASE_URL}
+        username: ${DATABASE_USERNAME}
+        password: ${DATABASE_PASSWORD}
+
+        hikari:
+            maximum-pool-size: 10
+            minimum-idle: 2
+            connection-timeout: 30000
+            idle-timeout: 600000
+            pool-name: WhatsBotAI-DevLocal-Pool
+
+    # ─── JPA (debug ligado pra desenvolvimento) ───────────────────────────────
+    jpa:
+        show-sql: true
+
+        properties:
+            hibernate:
+                "[formate_sql]": true
+
+# ─── Logging (verbose pra dev) ───────────────────────────────────────────────
+logging:
+    level:
+        '[com.whatsbotai]': DEBUG
+        '[org.hibernate.SQL]': DEBUG
+        '[org.hibernate.orm.jdbc.bind]': TRACE
