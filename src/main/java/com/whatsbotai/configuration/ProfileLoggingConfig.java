@@ -11,7 +11,9 @@ import java.lang.management.ManagementFactory;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.stream.Collectors;
 
 /**
@@ -128,23 +130,45 @@ public class ProfileLoggingConfig implements ApplicationListener<ApplicationRead
 
     /**
      * Reads exposed Actuator endpoints from configuration.
-     * Returns "none" if Actuator isn't configured.
+     *
+     * <p>Spring exposes YAML lists as indexed properties ({@code include[0]},
+     * {@code include[1]}, ...) rather than a single comma-separated string,
+     * so we collect them iteratively. Falls back to a comma-separated read
+     * to support both YAML list and inline formats.
+     *
+     * @return formatted list of exposed endpoints, or "none" if none configured
      */
     private String formatActuatorEndpoints(Environment env) {
-        String exposed = env.getProperty("management.endpoints.web.exposure.include");
+        
+        // Try list-style first (YAML with `- health` etc.)
+        List<String> endpoints = new ArrayList<>();
+        for (int i = 0; ; i++) {
+            String value = env.getProperty("management.endpoints.web.exposure.include[" + i + "]");
 
-        if (exposed == null || exposed.isBlank()) {
+            if (value == null) {
+                break;
+            }
+            endpoints.add(value.trim());
+        }
+
+        // Fallback: comma-separated single value (e.g., include: "health,info")
+        if (endpoints.isEmpty()) {
+            String csv = env.getProperty("management.endpoint.web.exposure.include");
+            if (csv != null && !csv.isBlank()) {
+                endpoints = Arrays.stream(csv.split(","))
+                        .map(String::trim)
+                        .filter(s -> !s.isEmpty())
+                        .collect(Collectors.toList());
+            }
+        }
+
+        if (endpoints.isEmpty()) {
             return "none";
         }
 
-        // Comma-separated string from YAML may have whitespace — normalize.
-        String normalized = Arrays.stream(exposed.split(","))
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .collect(Collectors.joining(", "));
-
         String basePath = env.getProperty("management.endpoints.web.base-path", "/actuator");
-        return String.format("%s (base path: %s)", normalized, basePath);
+        return String.format("%s (base: %s)", String.join(", ", endpoints), basePath);
+
     }
 
     /**
