@@ -75,3 +75,16 @@ logging:
     root: INFO
     '[com.whatsbotai]': INFO
     '[org.flywaydb]': INFO
+
+# ─── Build Info (exposto via /actuator/info) ────────────────────────────────
+# Valores são substituídos pelo Gradle (ReplaceTokens) durante o build.
+info:
+  app:
+    name: ${spring.application.name}
+    version: '@appVersion@'
+  build:
+    timestamp: '@buildTimestamp@'
+  git:
+    branch: '@gitBranch@'
+    commit: '@gitCommit@'
+

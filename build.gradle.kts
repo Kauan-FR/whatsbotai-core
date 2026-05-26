@@ -9,10 +9,17 @@
  * @since 2026
  */
 
+import org.apache.tools.ant.filters.ReplaceTokens
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.time.OffsetDateTime
+import java.time.format.DateTimeFormatter
+import java.util.concurrent.TimeUnit
+
 /*
-Plugins que ensinam ao Grodle a realizar tarefas
-@param java - Ensina o Grodle a copilar .java
-@param org.springframework.boo - Plugins do Spring
+Plugins que ensinam ao Gradle a realizar tarefas
+@param java - Ensina o Gradle a compilar .java
+@param org.springframework.boot - Plugins do Spring
 @param io.spring.dependency-management - Plugins que gerencia versões de dependência do Spring
 */
 plugins {
@@ -21,6 +28,34 @@ plugins {
 	id("io.spring.dependency-management") version "1.1.7"
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Build-time Git metadata
+// Uses ProcessBuilder (JDK API) instead of Gradle's exec {}, which was
+// removed at the project level in Gradle 9 as part of the Configuration
+// Cache effort. ProcessBuilder works on any Gradle version.
+// ─────────────────────────────────────────────────────────────────────────────
+fun runGitCommand(vararg args: String): String {
+	return try {
+		val process = ProcessBuilder(listOf("git") + args)
+			.redirectErrorStream(true)
+			.start()
+
+		val output = BufferedReader(InputStreamReader(process.inputStream))
+			.use { it.readText().trim() }
+
+		val finished = process.waitFor(5, TimeUnit.SECONDS)
+		if (!finished || process.exitValue() != 0) {
+			"unknown"
+		} else {
+			output.ifEmpty { "unknown" }
+		}
+	} catch (e: Exception) {
+		"unknown"
+	}
+}
+
+fun getGitCommitHash(): String = runGitCommand("rev-parse", "--short", "HEAD")
+fun getGitBranch(): String = runGitCommand("rev-parse", "--abbrev-ref", "HEAD")
 
 group = "com.whatsbotai"
 version = "0.0.1-SNAPSHOT"
@@ -135,3 +170,24 @@ tasks.named<org.springframework.boot.gradle.tasks.bundling.BootJar>("bootJar") {
 	archiveFileName.set("whatsbotai-core.jar")
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Resource processing: inject build-time metadata into application.yml
+// Placeholders use @token@ syntax (Ant ReplaceTokens) to avoid conflict
+// with Spring's runtime ${...} property placeholders.
+// ─────────────────────────────────────────────────────────────────────────────
+tasks.processResources {
+	filesMatching("application.yml") {
+		filter(
+
+			ReplaceTokens::class,
+			"tokens" to mapOf(
+				"appVersion" to project.version.toString(),
+				"gitCommit" to getGitCommitHash(),
+				"gitBranch" to getGitBranch(),
+				"buildTimestamp" to OffsetDateTime.now()
+					.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+
+			)
+		)
+	}
+}
