@@ -12,8 +12,7 @@ spring:
     username: ${DATABASE_USERNAME}
     password: ${DATABASE_PASSWORD}
 
-  hikari:
-    datasource:
+    hikari:
       maximum-pool-size: 10
       minimum-idle: 2
       connection-timeout: 30000
@@ -21,12 +20,12 @@ spring:
       pool-name: WhatsBotAI-DevDocker-Pool
 
   # ─── JPA (debug ligado pra desenvolvimento) ───────────────────────────────
-    jpa:
-      show-sql: true
+  jpa:
+    show-sql: true
 
-      properties:
-        hibernate:
-          "[format_sql]": true
+    properties:
+      hibernate:
+        "[format_sql]": true
 
 # ─── Logging (verbose pra dev) ───────────────────────────────────────────────
 logging:
