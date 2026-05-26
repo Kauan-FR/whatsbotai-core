@@ -1,0 +1,62 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# Profile: prod
+# Ambiente: Produção (Fly.io apontando para Neon Postgres)
+# Validação local: ./gradlew bootRun --args='--spring.profiles.active=prod'
+#                  (em casa, com .env apontando para Neon)
+# Produção real: SPRING_PROFILES_ACTIVE=prod injetado pelo Fly.io
+# ═════════════════════════════════════════════════════════════════════════════
+
+spring:
+
+    # ─── Datasource (Neon Postgres via .env / Fly.io secrets) ─────────────────
+    datasource:
+        url: ${DATABASE_URL}
+        username: ${DATABASE_USERNAME}
+        password: ${DATABASE_PASSWORD}
+
+        hikari:
+
+            # Pool reduzido para Neon free tier (~20 conexões totais disponíveis).
+            # Com 5 conexões por instância, suportamos até 4 instâncias sem estouro.
+            maximum-pool-size: 5
+            minimum-idle: 1
+
+            # Timeouts mais tolerantes para latência de rede + cold start do Neon
+            connection-timeout: 30000      # 30s para obter conexão do pool
+            validation-timeout: 5000       # 5s para validar conexão
+            idle-timeout: 300000           # 5min antes de fechar conexão ociosa
+            max-lifetime: 1800000          # 30min vida máxima (Neon recicla conexões)
+            keepalive-time: 60000          # ping a cada 1min p/ manter conexão viva
+
+            pool-name: WhatsBotAI-Prod-Pool
+
+    # ─── JPA (SQL logging OFF em produção) ────────────────────────────────────
+    jpa:
+        show-sql: false
+
+        properties:
+            hibernate:
+                "[format_sql]": false
+
+                # Otimização: agrupa N inserts/updates em batches de até 25 statements
+                jdbc:
+                    "[batch_size]": 25
+                    "[order_inserts]": true
+                    "[order_updates]": true
+
+# ─── Logging (silencioso em produção) ────────────────────────────────────────
+
+logging:
+  level:
+    root: WARN
+    '[com.whatsbotai]': INFO
+    '[org.hibernate]': WARN
+    '[org.flywaydb]': INFO
+    '[com.zaxxer.hikari]': WARN
+
+
+  # Padrão de log otimizado para sistemas de log centralizados (JSON-like).
+  # Inclui timestamp ISO 8601, thread, logger e correlation ID (placeholder).
+  pattern:
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] %logger{36} - %msg%n"
+
