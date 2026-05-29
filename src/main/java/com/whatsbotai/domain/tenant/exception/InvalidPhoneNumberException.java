@@ -28,7 +28,7 @@ public final class InvalidPhoneNumberException extends DomainException {
      */
     public static InvalidPhoneNumberException forNullOrBlanck() {
 
-        return new InvalidPhoneNumberException("Phone number must not be null or blanck");
+        return new InvalidPhoneNumberException("Phone number must not be null or blank");
     }
 
     /**
