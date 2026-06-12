@@ -1,26 +1,35 @@
 package com.whatsbotai.domain.tenant.model;
 
-import com.whatsbotai.domain.shared.event.DomainEvent;
-import com.whatsbotai.domain.tenant.event.TenantCreatedEvent;
-import com.whatsbotai.domain.tenant.exception.InvalidTenantNameException;
-import com.whatsbotai.domain.tenant.vo.BaileysAppName;
-import com.whatsbotai.domain.tenant.vo.Email;
-import com.whatsbotai.domain.tenant.vo.PhoneNumber;
-import com.whatsbotai.domain.tenant.vo.TaxId;
-import com.whatsbotai.domain.tenant.vo.TenantId;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.NullAndEmptySource;
-import org.junit.jupiter.params.provider.ValueSource;
-
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.ValueSource;
+
+import com.whatsbotai.domain.shared.event.DomainEvent;
+import com.whatsbotai.domain.tenant.event.TenantActivatedEvent;
+import com.whatsbotai.domain.tenant.event.TenantCancelledEvent;
+import com.whatsbotai.domain.tenant.event.TenantCreatedEvent;
+import com.whatsbotai.domain.tenant.event.TenantReactivatedEvent;
+import com.whatsbotai.domain.tenant.event.TenantSuspendedEvent;
+import com.whatsbotai.domain.tenant.exception.EmailNotVerifiedException;
+import com.whatsbotai.domain.tenant.exception.InvalidCancellationReasonException;
+import com.whatsbotai.domain.tenant.exception.InvalidTenantNameException;
+import com.whatsbotai.domain.tenant.exception.TenantAlreadyCancelledException;
+import com.whatsbotai.domain.tenant.exception.TenantStatusTransitionException;
+import com.whatsbotai.domain.tenant.vo.BaileysAppName;
+import com.whatsbotai.domain.tenant.vo.Email;
+import com.whatsbotai.domain.tenant.vo.PhoneNumber;
+import com.whatsbotai.domain.tenant.vo.TaxId;
+import com.whatsbotai.domain.tenant.vo.TenantId;
 
 @DisplayName("Tenant — aggregate root: creation, reconstitution, and invariants")
 class TenantTest {
@@ -486,4 +495,282 @@ class TenantTest {
                     .doesNotContain("5581987654321");
         }
     }
+
+    /**
+     * Helper to reconstitute a tenant in a specific state for testing
+     * lifecycle operations that require non-default starting conditions.
+     */
+    private static Tenant tenantInStatus(TenantStatus status, boolean emailVerified) {
+        return Tenant.reconstitute(
+                TenantId.generate(),
+                "Test Tenant",
+                validEmail(),
+                validTaxId(),
+                validPhone(),
+                validBaileysAppName(),
+                status,
+                TenantPlan.FREE,
+                emailVerified,
+                false,
+                false,
+                Instant.now().minusSeconds(3600),
+                Instant.now().minusSeconds(3600),
+                null,
+                0L
+        );
+    }
+
+    @Nested
+    @DisplayName("activate() — PENDING → ACTIVE")
+    class Activation {
+
+        @Test
+        @DisplayName("should transition from PENDING to ACTIVE when email is verified")
+        void shouldActivateWhenEmailVerified() {
+            Tenant tenant = tenantInStatus(TenantStatus.PENDING, true);
+
+            tenant.activate();
+
+            assertThat(tenant.status()).isEqualTo(TenantStatus.ACTIVE);
+        }
+
+        @Test
+        @DisplayName("should publish a TenantActivatedEvent")
+        void shouldPublishActivatedEvent() {
+            Tenant tenant = tenantInStatus(TenantStatus.PENDING, true);
+
+            tenant.activate();
+
+            List<DomainEvent> events = tenant.pullDomainEvents();
+            assertThat(events).hasSize(1);
+            assertThat(events.get(0)).isInstanceOf(TenantActivatedEvent.class);
+            assertThat(((TenantActivatedEvent) events.get(0)).tenantId()).isEqualTo(tenant.id());
+        }
+
+        @Test
+        @DisplayName("should update updatedAt")
+        void shouldUpdateUpdatedAt() {
+            Tenant tenant = tenantInStatus(TenantStatus.PENDING, true);
+            Instant before = tenant.updatedAt();
+
+            tenant.activate();
+
+            assertThat(tenant.updatedAt()).isAfterOrEqualTo(before);
+        }
+
+        @Test
+        @DisplayName("should reject activation when email is NOT verified")
+        void shouldRejectWhenEmailNotVerified() {
+            Tenant tenant = tenantInStatus(TenantStatus.PENDING, false);
+
+            assertThatThrownBy(tenant::activate)
+                    .isInstanceOf(EmailNotVerifiedException.class)
+                    .hasMessageContaining("activate");
+        }
+
+        @ParameterizedTest
+        @EnumSource(value = TenantStatus.class, names = {"ACTIVE", "SUSPENDED"})
+        @DisplayName("should reject activation when status is not PENDING")
+        void shouldRejectWhenNotPending(TenantStatus status) {
+            Tenant tenant = tenantInStatus(status, true);
+
+            assertThatThrownBy(tenant::activate)
+                    .isInstanceOf(TenantStatusTransitionException.class);
+        }
+
+        @Test
+        @DisplayName("should reject activation on a cancelled tenant")
+        void shouldRejectOnCancelled() {
+            Tenant tenant = tenantInStatus(TenantStatus.CANCELLED, true);
+
+            assertThatThrownBy(tenant::activate)
+                    .isInstanceOf(TenantAlreadyCancelledException.class)
+                    .hasMessageContaining("activate");
+        }
+    }
+
+    @Nested
+    @DisplayName("suspend() — ACTIVE → SUSPENDED")
+    class Suspension {
+
+        @Test
+        @DisplayName("should transition from ACTIVE to SUSPENDED")
+        void shouldSuspendFromActive() {
+            Tenant tenant = tenantInStatus(TenantStatus.ACTIVE, true);
+
+            tenant.suspend();
+
+            assertThat(tenant.status()).isEqualTo(TenantStatus.SUSPENDED);
+        }
+
+        @Test
+        @DisplayName("should publish a TenantSuspendedEvent")
+        void shouldPublishSuspendedEvent() {
+            Tenant tenant = tenantInStatus(TenantStatus.ACTIVE, true);
+
+            tenant.suspend();
+
+            List<DomainEvent> events = tenant.pullDomainEvents();
+            assertThat(events).hasSize(1);
+            assertThat(events.get(0)).isInstanceOf(TenantSuspendedEvent.class);
+        }
+
+        @ParameterizedTest
+        @EnumSource(value = TenantStatus.class, names = {"PENDING", "SUSPENDED"})
+        @DisplayName("should reject suspension when status is not ACTIVE")
+        void shouldRejectWhenNotActive(TenantStatus status) {
+            Tenant tenant = tenantInStatus(status, true);
+
+            assertThatThrownBy(tenant::suspend)
+                    .isInstanceOf(TenantStatusTransitionException.class);
+        }
+
+        @Test
+        @DisplayName("should reject suspension on a cancelled tenant")
+        void shouldRejectOnCancelled() {
+            Tenant tenant = tenantInStatus(TenantStatus.CANCELLED, true);
+
+            assertThatThrownBy(tenant::suspend)
+                    .isInstanceOf(TenantAlreadyCancelledException.class)
+                    .hasMessageContaining("suspend");
+        }
+    }
+
+    @Nested
+    @DisplayName("reactivate() — SUSPENDED → ACTIVE")
+    class Reactivation {
+
+        @Test
+        @DisplayName("should transition from SUSPENDED to ACTIVE")
+        void shouldReactivateFromSuspended() {
+            Tenant tenant = tenantInStatus(TenantStatus.SUSPENDED, true);
+
+            tenant.reactivate();
+
+            assertThat(tenant.status()).isEqualTo(TenantStatus.ACTIVE);
+        }
+
+        @Test
+        @DisplayName("should publish a TenantReactivatedEvent")
+        void shouldPublishReactivatedEvent() {
+            Tenant tenant = tenantInStatus(TenantStatus.SUSPENDED, true);
+
+            tenant.reactivate();
+
+            List<DomainEvent> events = tenant.pullDomainEvents();
+            assertThat(events).hasSize(1);
+            assertThat(events.get(0)).isInstanceOf(TenantReactivatedEvent.class);
+        }
+
+        @ParameterizedTest
+        @EnumSource(value = TenantStatus.class, names = {"PENDING", "ACTIVE"})
+        @DisplayName("should reject reactivation when status is not SUSPENDED")
+        void shouldRejectWhenNotSuspended(TenantStatus status) {
+            Tenant tenant = tenantInStatus(status, true);
+
+            assertThatThrownBy(tenant::reactivate)
+                    .isInstanceOf(TenantStatusTransitionException.class);
+        }
+
+        @Test
+        @DisplayName("should reject reactivation on a cancelled tenant")
+        void shouldRejectOnCancelled() {
+            Tenant tenant = tenantInStatus(TenantStatus.CANCELLED, true);
+
+            assertThatThrownBy(tenant::reactivate)
+                    .isInstanceOf(TenantAlreadyCancelledException.class)
+                    .hasMessageContaining("reactivate");
+        }
+    }
+
+    @Nested
+    @DisplayName("cancel() — voluntary cancellation")
+    class VoluntaryCancellation {
+
+        @ParameterizedTest
+        @EnumSource(value = TenantStatus.class, names = {"PENDING", "ACTIVE", "SUSPENDED"})
+        @DisplayName("should transition any non-terminal status to CANCELLED")
+        void shouldCancelFromAnyNonTerminalStatus(TenantStatus startingStatus) {
+            Tenant tenant = tenantInStatus(startingStatus, true);
+
+            tenant.cancel();
+
+            assertThat(tenant.status()).isEqualTo(TenantStatus.CANCELLED);
+        }
+
+        @Test
+        @DisplayName("should publish a TenantCancelledEvent with empty reason")
+        void shouldPublishCancelledEventWithoutReason() {
+            Tenant tenant = tenantInStatus(TenantStatus.ACTIVE, true);
+
+            tenant.cancel();
+
+            List<DomainEvent> events = tenant.pullDomainEvents();
+            assertThat(events).hasSize(1);
+            assertThat(events.get(0)).isInstanceOf(TenantCancelledEvent.class);
+            assertThat(((TenantCancelledEvent) events.get(0)).reason()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("should reject voluntary cancellation on already cancelled tenant")
+        void shouldRejectOnCancelled() {
+            Tenant tenant = tenantInStatus(TenantStatus.CANCELLED, true);
+
+            assertThatThrownBy(tenant::cancel)
+                    .isInstanceOf(TenantAlreadyCancelledException.class)
+                    .hasMessageContaining("cancel");
+        }
+    }
+
+    @Nested
+    @DisplayName("forceCancel(reason) — admin force-cancellation")
+    class ForceCancellation {
+
+        @Test
+        @DisplayName("should transition to CANCELLED with the documented reason")
+        void shouldForceCancelWithReason() {
+            Tenant tenant = tenantInStatus(TenantStatus.ACTIVE, true);
+
+            tenant.forceCancel("Repeated terms of service violations");
+
+            assertThat(tenant.status()).isEqualTo(TenantStatus.CANCELLED);
+        }
+
+        @Test
+        @DisplayName("should publish a TenantCancelledEvent with the reason")
+        void shouldPublishCancelledEventWithReason() {
+            Tenant tenant = tenantInStatus(TenantStatus.ACTIVE, true);
+            String reason = "Payment method rejected for 3 months";
+
+            tenant.forceCancel(reason);
+
+            List<DomainEvent> events = tenant.pullDomainEvents();
+            assertThat(events).hasSize(1);
+            TenantCancelledEvent event = (TenantCancelledEvent) events.get(0);
+            assertThat(event.reason()).contains(reason);
+        }
+
+        @ParameterizedTest
+        @NullAndEmptySource
+        @ValueSource(strings = {"   ", "\t"})
+        @DisplayName("should reject null, empty, or blank reason")
+        void shouldRejectBlankReason(String invalidReason) {
+            Tenant tenant = tenantInStatus(TenantStatus.ACTIVE, true);
+
+            assertThatThrownBy(() -> tenant.forceCancel(invalidReason))
+                    .isInstanceOf(InvalidCancellationReasonException.class)
+                    .hasMessageContaining("null or blank");
+        }
+
+        @Test
+        @DisplayName("should reject force cancellation on already cancelled tenant")
+        void shouldRejectOnCancelled() {
+            Tenant tenant = tenantInStatus(TenantStatus.CANCELLED, true);
+
+            assertThatThrownBy(() -> tenant.forceCancel("Any reason"))
+                    .isInstanceOf(TenantAlreadyCancelledException.class)
+                    .hasMessageContaining("forceCancel");
+        }
+    }
+
 }

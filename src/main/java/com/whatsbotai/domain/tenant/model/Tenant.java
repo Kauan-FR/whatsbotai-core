@@ -1,16 +1,24 @@
 package com.whatsbotai.domain.tenant.model;
 
+import java.time.Instant;
+import java.util.Objects;
+
 import com.whatsbotai.domain.shared.event.AggregateRoot;
+import com.whatsbotai.domain.tenant.event.TenantActivatedEvent;
+import com.whatsbotai.domain.tenant.event.TenantCancelledEvent;
 import com.whatsbotai.domain.tenant.event.TenantCreatedEvent;
+import com.whatsbotai.domain.tenant.event.TenantReactivatedEvent;
+import com.whatsbotai.domain.tenant.event.TenantSuspendedEvent;
+import com.whatsbotai.domain.tenant.exception.EmailNotVerifiedException;
+import com.whatsbotai.domain.tenant.exception.InvalidCancellationReasonException;
 import com.whatsbotai.domain.tenant.exception.InvalidTenantNameException;
+import com.whatsbotai.domain.tenant.exception.TenantAlreadyCancelledException;
+import com.whatsbotai.domain.tenant.exception.TenantStatusTransitionException;
 import com.whatsbotai.domain.tenant.vo.BaileysAppName;
 import com.whatsbotai.domain.tenant.vo.Email;
 import com.whatsbotai.domain.tenant.vo.PhoneNumber;
 import com.whatsbotai.domain.tenant.vo.TaxId;
 import com.whatsbotai.domain.tenant.vo.TenantId;
-
-import java.time.Instant;
-import java.util.Objects;
 /**
  * Aggregate root representing a tenant in the WhatsBot AI multi-tenant SaaS.
  *
@@ -263,6 +271,166 @@ public final class Tenant extends AggregateRoot {
             throw InvalidTenantNameException.forTooLong(trimmed, NAME_MAX_LENGTH);
         }
         return trimmed;
+    }
+
+   // === Lifecycle operations ===
+
+    /**
+     * Activates a {@code PENDING} tenant, transitioning it to {@code ACTIVE}.
+     *
+     * <p><strong>Pre-conditions:</strong>
+     * <ul>
+     *   <li>The tenant must not be {@code CANCELLED}</li>
+     *   <li>The current status must be {@code PENDING}</li>
+     *   <li>The contact email must be verified (anti-squatting safeguard)</li>
+     * </ul>
+     *
+     * <p>Publishes a {@link TenantActivatedEvent} on success.
+     *
+     * @throws TenantAlreadyCancelledException  if the tenant is in CANCELLED status
+     * @throws TenantStatusTransitionException  if the current status is not PENDING
+     * @throws EmailNotVerifiedException        if the contact email has not been verified
+     */
+    public void activate() {
+        ensureNotCancelled("activate");
+
+        if (status != TenantStatus.PENDING) {
+            throw TenantStatusTransitionException.between(status, TenantStatus.ACTIVE);
+        }
+
+        if (!emailVerified) {
+            throw EmailNotVerifiedException.forOperation("activate");
+        }
+
+        this.status = TenantStatus.ACTIVE;
+        touch();
+        registerEvent(new TenantActivatedEvent(id));
+    }
+
+    /**
+     * Suspends an {@code ACTIVE} tenant, transitioning it to {@code SUSPENDED}.
+     *
+     * <p>A suspended tenant cannot use the system but is not terminated;
+     * it can be reactivated later via {@link #reactivate()}.
+     *
+     * <p>Publishes a {@link TenantSuspendedEvent} on success.
+     *
+     * @throws TenantAlreadyCancelledException  if the tenant is in CANCELLED status
+     * @throws TenantStatusTransitionException  if the current status is not ACTIVE
+     */
+    public void suspend() {
+        ensureNotCancelled("suspend");
+
+        transitionTo(TenantStatus.SUSPENDED);
+        touch();
+        registerEvent(new TenantSuspendedEvent(id));
+    }
+
+    /**
+     * Reactivates a {@code SUSPENDED} tenant, transitioning it back to {@code ACTIVE}.
+     *
+     * <p>Publishes a {@link TenantReactivatedEvent} on success.
+     *
+     * @throws TenantAlreadyCancelledException  if the tenant is in CANCELLED status
+     * @throws TenantStatusTransitionException  if the current status is not SUSPENDED
+     */
+    public void reactivate() {
+        ensureNotCancelled("reactivate");
+
+        if (status != TenantStatus.SUSPENDED) {
+            throw TenantStatusTransitionException.between(status, TenantStatus.ACTIVE);
+        }
+
+        this.status = TenantStatus.ACTIVE;
+        touch();
+        registerEvent(new TenantReactivatedEvent(id));
+    }
+
+    /**
+     * Voluntarily cancels this tenant, transitioning it to the terminal
+     * {@code CANCELLED} state.
+     *
+     * <p>Used when the customer themselves requests termination. For
+     * administrative force-cancellation (terms violations, fraud, etc.),
+     * use {@link #forceCancel(String)} instead.
+     *
+     * <p>Publishes a {@link TenantCancelledEvent} with an empty reason.
+     *
+     * @throws TenantAlreadyCancelledException if the tenant is already cancelled
+     * @throws TenantStatusTransitionException if the current status cannot transition to CANCELLED
+     */
+    public void cancel() {
+        ensureNotCancelled("cancel");
+
+        transitionTo(TenantStatus.CANCELLED);
+        touch();
+        registerEvent(new TenantCancelledEvent(id));
+    }
+
+    /**
+     * Administratively cancels this tenant with a documented reason.
+     *
+     * <p>Used by administrators for terms-of-service violations, payment
+     * failures, or other operational decisions. The reason is mandatory
+     * for compliance (LGPD/GDPR) and internal auditing.
+     *
+     * <p>Publishes a {@link TenantCancelledEvent} carrying the reason.
+     *
+     * @param reason a non-blank explanation for the cancellation
+     * @throws TenantAlreadyCancelledException     if the tenant is already cancelled
+     * @throws InvalidCancellationReasonException  if the reason is null or blank
+     * @throws TenantStatusTransitionException     if the current status cannot transition to CANCELLED
+     */
+    public void forceCancel(String reason) {
+        ensureNotCancelled("forceCancel");
+
+        if (reason == null || reason.isBlank()) {
+            throw InvalidCancellationReasonException.forNullOrBlank();
+        }
+
+        String trimmedReason = reason.trim();
+        transitionTo(TenantStatus.CANCELLED);
+        touch();
+        registerEvent(new TenantCancelledEvent(id, trimmedReason));
+    }
+
+    // === Internal helpers ===
+
+    /**
+     * Guard that prevents any write operation on a cancelled tenant.
+     * Cancelled is the terminal state — data is preserved but immutable
+     * from the domain's perspective.
+     *
+     * @param operationName the name of the operation being attempted,
+     *                      used for diagnostic messages
+     * @throws TenantAlreadyCancelledException if the tenant is in CANCELLED status
+     */
+    private void ensureNotCancelled(String operationName) {
+        if (status == TenantStatus.CANCELLED) {
+            throw TenantAlreadyCancelledException.forOperation(operationName);
+        }
+    }
+
+    /**
+     * Performs a status transition, validating it against the state machine
+     * declared in {@link TenantStatus}.
+     *
+     * @param target the desired status
+     * @throws TenantStatusTransitionException if the transition is not allowed
+     */
+    private void transitionTo(TenantStatus target) {
+        if (!status.canTransitionTo(target)) {
+            throw TenantStatusTransitionException.between(status, target);
+        }
+        this.status = target;
+    }
+
+    /**
+     * Updates {@code updatedAt} to the current instant. Called by every
+     * write operation to keep the timestamp in sync.
+     */
+    private void touch() {
+        this.updatedAt = Instant.now();
     }
 
     // === Accessors ===
