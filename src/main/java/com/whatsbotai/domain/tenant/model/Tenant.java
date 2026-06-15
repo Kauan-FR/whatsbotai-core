@@ -4,11 +4,7 @@ import java.time.Instant;
 import java.util.Objects;
 
 import com.whatsbotai.domain.shared.event.AggregateRoot;
-import com.whatsbotai.domain.tenant.event.TenantActivatedEvent;
-import com.whatsbotai.domain.tenant.event.TenantCancelledEvent;
-import com.whatsbotai.domain.tenant.event.TenantCreatedEvent;
-import com.whatsbotai.domain.tenant.event.TenantReactivatedEvent;
-import com.whatsbotai.domain.tenant.event.TenantSuspendedEvent;
+import com.whatsbotai.domain.tenant.event.*;
 import com.whatsbotai.domain.tenant.exception.EmailNotVerifiedException;
 import com.whatsbotai.domain.tenant.exception.InvalidCancellationReasonException;
 import com.whatsbotai.domain.tenant.exception.InvalidTenantNameException;
@@ -431,6 +427,221 @@ public final class Tenant extends AggregateRoot {
      */
     private void touch() {
         this.updatedAt = Instant.now();
+    }
+
+    // === Data change operations ===
+    /**
+     * Changes the tenant's contact email.
+     *
+     * <p><strong>Security note:</strong> changing the email automatically
+     * resets the verification flag to {@code false}. The new address must
+     * be re-verified before any operation that requires a verified email
+     * (such as {@link #activate()} or {@link #enableTwoFactorAuth()}).
+     * This prevents an attacker from inheriting verification status by
+     * changing the address to one they control.
+     *
+     * <p>If the provided email equals the current one, this method is a
+     * no-op: verification is preserved and no event is published.
+     *
+     * <p>Publishes {@link TenantEmailChangedEvent} on actual change.
+     *
+     * @param newEmail the new contact email (must not be null)
+     * @throws TenantAlreadyCancelledException if the tenant is cancelled
+     * @throws NullPointerException            if {@code newEmail} is null
+     */
+    public void changeEmail(Email newEmail) {
+        ensureNotCancelled("changeEmail");
+        Objects.requireNonNull(newEmail, "email must not be null");
+
+        if (this.email.equals(newEmail)) {
+            return;
+        }
+
+        Email oldEmail = this.email;
+        this.email = newEmail;
+        this.emailVerified = false;
+        touch();
+        registerEvent(new TenantEmailChangedEvent(id, oldEmail, newEmail));
+    }
+
+    /**
+     * Changes the tenant's contact phone number.
+     *
+     * <p><strong>Security note:</strong> changing the phone number
+     * automatically resets the verification flag to {@code false}. The
+     * new number must be re-verified before features that rely on a
+     * verified phone (such as WhatsApp messaging trust signals).
+     *
+     * <p>If the provided phone equals the current one, this method is a
+     * no-op: verification is preserved and no event is published.
+     *
+     * <p>Publishes {@link TenantPhoneNumberChangedEvent} on actual change.
+     *
+     * @param newPhoneNumber the new phone number (must not be null)
+     * @throws TenantAlreadyCancelledException if the tenant is cancelled
+     * @throws NullPointerException            if {@code newPhoneNumber} is null
+     */
+    public void changePhone(PhoneNumber newPhoneNumber) {
+        ensureNotCancelled("changePhoneNumber");
+        Objects.requireNonNull(newPhoneNumber, "phoneNumber must not be null");
+
+        if (this.phoneNumber.equals(newPhoneNumber)) {
+            return;
+        }
+
+        PhoneNumber oldPhone = this.phoneNumber;
+        this.phoneNumber = newPhoneNumber;
+        this.phoneNumberVerified = false;
+        touch();
+        registerEvent(new TenantPhoneNumberChangedEvent(id, oldPhone, newPhoneNumber));
+    }
+
+    /**
+     * Renames the tenant.
+     *
+     * <p>The input is trimmed and validated against the same rules as
+     * {@link #create(String, Email, TaxId, PhoneNumber, BaileysAppName)}.
+     *
+     * <p>If the trimmed new name equals the current one, this method is
+     * a no-op: no event is published.
+     *
+     * <p>Publishes {@link TenantRenamedEvent} on actual change.
+     *
+     * @param newName the new display name (2 to 100 characters, trimmed)
+     * @throws TenantAlreadyCancelledException if the tenant is cancelled
+     * @throws InvalidTenantNameException      if the name is null, blank, or out of range
+     */
+    public void rename(String newName) {
+        ensureNotCancelled("rename");
+        String validatedName = validateName(newName);
+
+        if (this.name.equals(validatedName)) {
+            return;
+        }
+
+        String oldName = this.name;
+        this.name = validatedName;
+        touch();
+        registerEvent(new TenantRenamedEvent(id, oldName, validatedName));
+    }
+
+    // === Verification operations ===
+
+    /**
+     * Marks the contact email as verified.
+     *
+     * <p>This method is idempotent: calling it on an already-verified
+     * tenant is a no-op (no event published). This matches the common
+     * UX pattern where the user may click the verification link multiple
+     * times.
+     *
+     * <p>Publishes {@link TenantEmailVerifiedEvent} on actual change.
+     *
+     * @throws TenantAlreadyCancelledException if the tenant is cancelled
+     */
+    public void markEmailAsVerified() {
+        ensureNotCancelled("markEmailAsVerified");
+
+        if (this.emailVerified) {
+            return;
+        }
+        this.emailVerified = true;
+        touch();
+        registerEvent(new TenantEmailVerifiedEvent(id));
+    }
+
+    /**
+     * Marks the contact phone number as verified.
+     *
+     * <p>Idempotent: no-op when the phone is already verified.
+     *
+     * <p>Publishes {@link TenantPhoneNumberVerifiedEvent} on actual change.
+     *
+     * @throws TenantAlreadyCancelledException if the tenant is cancelled
+     */
+    public void markPhoneNumberAsVerified() {
+        ensureNotCancelled("markPhoneNumberAsVerified");
+
+        if (this.phoneNumberVerified) {
+            return;
+        }
+
+        this.phoneNumberVerified = true;
+        touch();
+        registerEvent(new TenantPhoneNumberVerifiedEvent(id));
+    }
+
+    // === Security operations ===
+
+    /**
+     * Enables two-factor authentication for this tenant.
+     *
+     * <p>Requires a verified email, because the recovery channel for 2FA
+     * is the contact email. Enabling 2FA on an unverified address would
+     * leave a back door open.
+     *
+     * <p>Idempotent: no-op when 2FA is already enabled.
+     *
+     * <p>Publishes {@link TenantTwoFactorAuthEnabledEvent} on actual change.
+     *
+     * @throws TenantAlreadyCancelledException if the tenant is cancelled
+     * @throws EmailNotVerifiedException       if the contact email is not verified
+     */
+    public void enableTwoFactorAuth() {
+        ensureNotCancelled("enableTwoFactorAuth");
+
+        if (!emailVerified) {
+            throw EmailNotVerifiedException.forOperation("enableTwoFactorAuth");
+        }
+        if (this.twoFactorEnabled) {
+            return;
+        }
+
+        this.twoFactorEnabled = true;
+        touch();
+        registerEvent(new TenantTwoFactorAuthEnabledEvent(id));
+    }
+
+    /**
+     * Disables two-factor authentication for this tenant.
+     *
+     * <p>Idempotent: no-op when 2FA is already disabled.
+     *
+     * <p>Publishes {@link TenantTwoFactorAuthDisabledEvent} on actual change.
+     *
+     * @throws TenantAlreadyCancelledException if the tenant is cancelled
+     */
+    public void disableTwoFactorAuth() {
+        ensureNotCancelled("disableTwoFactorAuth");
+
+        if (!this.twoFactorEnabled) {
+            return;
+        }
+        this.twoFactorEnabled = false;
+        touch();
+        registerEvent(new TenantTwoFactorAuthDisabledEvent(id));
+    }
+
+    // === Activity tracking ===
+
+    /**
+     * Records the moment of the tenant's last access.
+     *
+     * <p>Unlike business operations, this method does <strong>not</strong>
+     * update {@link #updatedAt()} (since access happens frequently and
+     * tracking it would defeat the purpose of {@code updatedAt} as a
+     * change indicator) and does <strong>not</strong> publish any domain
+     * event (it is operational metric, not a business fact).
+     *
+     * @param when the moment of access (typically {@code Instant.now()})
+     * @throws TenantAlreadyCancelledException if the tenant is cancelled
+     * @throws NullPointerException            if {@code when} is null
+     */
+    public void recordLastAccess(Instant when) {
+        ensureNotCancelled("recordLastAccess");
+        Objects.requireNonNull(when, "lastAccessAt must not be null");
+
+        this.lastAccessAt = when;
     }
 
     // === Accessors ===

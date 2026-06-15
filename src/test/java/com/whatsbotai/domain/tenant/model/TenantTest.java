@@ -6,6 +6,8 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import com.whatsbotai.domain.tenant.event.*;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -15,11 +17,6 @@ import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import com.whatsbotai.domain.shared.event.DomainEvent;
-import com.whatsbotai.domain.tenant.event.TenantActivatedEvent;
-import com.whatsbotai.domain.tenant.event.TenantCancelledEvent;
-import com.whatsbotai.domain.tenant.event.TenantCreatedEvent;
-import com.whatsbotai.domain.tenant.event.TenantReactivatedEvent;
-import com.whatsbotai.domain.tenant.event.TenantSuspendedEvent;
 import com.whatsbotai.domain.tenant.exception.EmailNotVerifiedException;
 import com.whatsbotai.domain.tenant.exception.InvalidCancellationReasonException;
 import com.whatsbotai.domain.tenant.exception.InvalidTenantNameException;
@@ -773,4 +770,479 @@ class TenantTest {
         }
     }
 
+    /**
+     * Helper to reconstitute a fully configured tenant for testing
+     * operations that depend on verified-contact / 2FA state.
+     */
+    private static Tenant fullyConfiguredTenant() {
+        return Tenant.reconstitute(
+                TenantId.generate(),
+                "Pizzaria do Zé",
+                validEmail(),
+                validTaxId(),
+                validPhone(),
+                validBaileysAppName(),
+                TenantStatus.ACTIVE,
+                TenantPlan.FREE,
+                true, // emailVerified
+                true, // phoneNumberVerified
+                false, // twoFactorEnabled
+                Instant.now().minusSeconds(3600),
+                Instant.now().minusSeconds(3600),
+                null,
+                0L
+        );
+    }
+
+    @Nested
+    @DisplayName("changeEmail(newEmail)")
+    class ChangeEmail {
+
+        @Test
+        @DisplayName("should update the contact email and reset verification")
+        void shouldUpdateAndResetVerification() {
+            Tenant tenant = fullyConfiguredTenant();
+            Email newEmail = Email.of("novo@pizzariadoze.com.br");
+
+            tenant.changeEmail(newEmail);
+
+            assertThat(tenant.email()).isEqualTo(newEmail);
+            assertThat(tenant.isEmailVerified()).isFalse();
+        }
+
+        @Test
+        @DisplayName("should publish TenantEmailChangedEvent with old and new emails")
+        void shouldPublishEvent() {
+            Tenant tenant = fullyConfiguredTenant();
+            Email oldEmail = tenant.email();
+            Email newEmail = Email.of("novo@pizzariadoze.com.br");
+
+            tenant.changeEmail(newEmail);
+
+            List<DomainEvent> events = tenant.pullDomainEvents();
+            assertThat(events).hasSize(1);
+            TenantEmailChangedEvent event = (TenantEmailChangedEvent) events.get(0);
+            assertThat(event.oldEmail()).isEqualTo(oldEmail);
+            assertThat(event.newEmail()).isEqualTo(newEmail);
+        }
+
+        @Test
+        @DisplayName("should be a no-op when the new email equals the current one")
+        void shouldBeNoOpWhenSameEmail() {
+            Tenant tenant = fullyConfiguredTenant();
+            Email sameEmail = tenant.email();
+
+            tenant.changeEmail(sameEmail);
+
+            assertThat(tenant.pullDomainEvents()).isEmpty();
+            assertThat(tenant.isEmailVerified()).isTrue();
+        }
+
+        @Test
+        @DisplayName("should reject null email")
+        void shouldRejectNull() {
+            Tenant tenant = fullyConfiguredTenant();
+
+            assertThatThrownBy(() -> tenant.changeEmail(null))
+                    .isInstanceOf(NullPointerException.class)
+                    .hasMessageContaining("email");
+        }
+
+        @Test
+        @DisplayName("should reject change on a cancelled tenant")
+        void shouldRejectOnCancelled() {
+            Tenant tenant = tenantInStatus(TenantStatus.CANCELLED, true);
+
+            assertThatThrownBy(() -> tenant.changeEmail(Email.of("any@example.com")))
+                    .isInstanceOf(TenantAlreadyCancelledException.class)
+                    .hasMessageContaining("changeEmail");
+        }
+    }
+
+    @Nested
+    @DisplayName("changePhoneNumber(newPhone)")
+    class ChangePhone {
+
+        @Test
+        @DisplayName("should update the phone number and reset verification")
+        void shouldUpdateAndResetVerification() {
+            Tenant tenant = fullyConfiguredTenant();
+            PhoneNumber newPhone = PhoneNumber.of("5581912345678");
+
+            tenant.changePhone(newPhone);
+
+            assertThat(tenant.phoneNumber()).isEqualTo(newPhone);
+            assertThat(tenant.isPhoneNumberVerified()).isFalse();
+        }
+
+        @Test
+        @DisplayName("should publish TenantPhoneNumberChangedEvent")
+        void shouldPublishEvent() {
+            Tenant tenant = fullyConfiguredTenant();
+            PhoneNumber oldPhone = tenant.phoneNumber();
+            PhoneNumber newPhone = PhoneNumber.of("5581912345678");
+
+            tenant.changePhone(newPhone);
+
+            List<DomainEvent> events = tenant.pullDomainEvents();
+            assertThat(events).hasSize(1);
+            TenantPhoneNumberChangedEvent event = (TenantPhoneNumberChangedEvent) events.get(0);
+            assertThat(event.oldPhoneNumber()).isEqualTo(oldPhone);
+            assertThat(event.newPhoneNumber()).isEqualTo(newPhone);
+        }
+
+        @Test
+        @DisplayName("should be a no-op when the new phone equals the current one")
+        void shouldBeNoOpWhenSamePhone() {
+            Tenant tenant = fullyConfiguredTenant();
+            PhoneNumber samePhone = tenant.phoneNumber();
+
+            tenant.changePhone(samePhone);
+
+            assertThat(tenant.pullDomainEvents()).isEmpty();
+            assertThat(tenant.isPhoneNumberVerified()).isTrue();
+        }
+
+        @Test
+        @DisplayName("should reject null phone")
+        void shouldRejectNull() {
+            Tenant tenant = fullyConfiguredTenant();
+
+            assertThatThrownBy(() -> tenant.changePhone(null))
+                    .isInstanceOf(NullPointerException.class)
+                    .hasMessageContaining("phoneNumber");
+        }
+
+        @Test
+        @DisplayName("should reject change on a cancelled tenant")
+        void shouldRejectOnCancelled() {
+            Tenant tenant = tenantInStatus(TenantStatus.CANCELLED, true);
+
+            assertThatThrownBy(() -> tenant.changePhone(PhoneNumber.of("5581912345678")))
+                    .isInstanceOf(TenantAlreadyCancelledException.class)
+                    .hasMessageContaining("changePhoneNumber");
+        }
+    }
+
+    @Nested
+    @DisplayName("rename(newName)")
+    class  Rename {
+
+        @Test
+        @DisplayName("should update the tenant name and publish TenantRenamedEvent")
+        void shouldRenameAndPublishEvent() {
+            Tenant tenant = fullyConfiguredTenant();
+            String oldName = tenant.name();
+
+            tenant.rename("Pizzaria do Zé Premium");
+
+            assertThat(tenant.name()).isEqualTo("Pizzaria do Zé Premium");
+
+            List<DomainEvent> events = tenant.pullDomainEvents();
+            assertThat(events).hasSize(1);
+            TenantRenamedEvent event = (TenantRenamedEvent) events.get(0);
+            assertThat(event.oldName()).isEqualTo(oldName);
+            assertThat(event.newName()).isEqualTo("Pizzaria do Zé Premium");
+        }
+
+        @Test
+        @DisplayName("should trim whitespace from the new name")
+        void shouldTrimNewName() {
+            Tenant tenant = fullyConfiguredTenant();
+
+            tenant.rename("  New Name  ");
+
+            assertThat(tenant.name()).isEqualTo("New Name");
+        }
+
+        @Test
+        @DisplayName("should be a no-op when the new name equals the current one (after trimming)")
+        void shouldBeNoOpWhenSameName() {
+            Tenant tenant = fullyConfiguredTenant();
+            String sameName = tenant.name();
+
+            tenant.rename(sameName);
+
+            assertThat(tenant.pullDomainEvents()).isEmpty();
+        }
+
+        @ParameterizedTest
+        @NullAndEmptySource
+        @ValueSource(strings = {"   ", "\t", "A"})
+        @DisplayName("should reject invalid new names")
+        void shouldRejectInvalidNames(String invalid) {
+            Tenant tenant = fullyConfiguredTenant();
+
+            assertThatThrownBy(() -> tenant.rename(invalid))
+                    .isInstanceOf(InvalidTenantNameException.class);
+        }
+
+        @Test
+        @DisplayName("should reject rename on a cancelled tenant")
+        void shouldRejectOnCancelled() {
+            Tenant tenant = tenantInStatus(TenantStatus.CANCELLED, true);
+
+            assertThatThrownBy(() -> tenant.rename("New Name"))
+                    .isInstanceOf(TenantAlreadyCancelledException.class)
+                    .hasMessageContaining("rename");
+        }
+    }
+
+    @Nested
+    @DisplayName("markEmailAsVerified()")
+    class MarkEmailAsVerified {
+
+        @Test
+        @DisplayName("should mark email as verified and publish TenantEmailVerifiedEvent")
+        void shouldMarkAndPublish() {
+            Tenant tenant = tenantInStatus(TenantStatus.PENDING, false);
+
+            tenant.markEmailAsVerified();
+
+            assertThat(tenant.isEmailVerified()).isTrue();
+
+            List<DomainEvent> events = tenant.pullDomainEvents();
+            assertThat(events).hasSize(1);
+            assertThat(events.get(0)).isInstanceOf(TenantEmailVerifiedEvent.class);
+        }
+
+        @Test
+        @DisplayName("should be idempotent: no-op when already verified")
+        void shouldBeIdempotent() {
+            Tenant tenant = fullyConfiguredTenant();
+
+            tenant.markEmailAsVerified();
+
+            assertThat(tenant.isEmailVerified()).isTrue();
+            assertThat(tenant.pullDomainEvents()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("should reject on a cancelled tenant")
+        void shouldRejectOnCancelled() {
+            Tenant tenant = tenantInStatus(TenantStatus.CANCELLED, false);
+
+            assertThatThrownBy(tenant::markEmailAsVerified)
+                    .isInstanceOf(TenantAlreadyCancelledException.class)
+                    .hasMessageContaining("markEmailAsVerified");
+        }
+    }
+
+    @Nested
+    @DisplayName("markPhoneNumberAsVerified()")
+    class MarkPhoneVerified {
+
+        @Test
+        @DisplayName("should mark phone as verified and publish TenantPhoneNumberVerifiedEvent")
+        void shouldMarkAndPublish() {
+            Tenant tenant = tenantInStatus(TenantStatus.PENDING, false);
+
+            tenant.markPhoneNumberAsVerified();
+
+            assertThat(tenant.isPhoneNumberVerified()).isTrue();
+
+            List<DomainEvent> events = tenant.pullDomainEvents();
+            assertThat(events).hasSize(1);
+            assertThat(events.get(0)).isInstanceOf(TenantPhoneNumberVerifiedEvent.class);
+        }
+
+        @Test
+        @DisplayName("should be idempotent: no-op when already verified")
+        void shouldBeIdempotent() {
+            Tenant tenant = fullyConfiguredTenant();
+
+            tenant.markPhoneNumberAsVerified();
+
+            assertThat(tenant.isPhoneNumberVerified()).isTrue();
+            assertThat(tenant.pullDomainEvents()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("should reject on a cancelled tenant")
+        void shouldRejectOnCancelled() {
+            Tenant tenant = tenantInStatus(TenantStatus.CANCELLED, false);
+
+            assertThatThrownBy(tenant::markPhoneNumberAsVerified)
+                    .isInstanceOf(TenantAlreadyCancelledException.class)
+                    .hasMessageContaining("markPhoneNumberAsVerified");
+        }
+    }
+
+    @Nested
+    @DisplayName("enableTwoFactorAuth()")
+    class EnableTwoFactor {
+
+        @Test
+        @DisplayName("should enable 2FA when email is verified and publish event")
+        void shouldEnableWhenEmailVerified() {
+            Tenant tenant = fullyConfiguredTenant();
+
+            tenant.enableTwoFactorAuth();
+
+            assertThat(tenant.isTwoFactorEnabled()).isTrue();
+
+            List<DomainEvent> events = tenant.pullDomainEvents();
+            assertThat(events).hasSize(1);
+            assertThat(events.get(0)).isInstanceOf(TenantTwoFactorAuthEnabledEvent.class);
+        }
+
+        @Test
+        @DisplayName("should reject when email is NOT verified")
+        void shouldRejectWhenEmailNotVerified() {
+            Tenant tenant = tenantInStatus(TenantStatus.ACTIVE, false);
+
+            assertThatThrownBy(tenant::enableTwoFactorAuth)
+                    .isInstanceOf(EmailNotVerifiedException.class)
+                    .hasMessageContaining("enableTwoFactorAuth");
+        }
+
+        @Test
+        @DisplayName("should be idempotent: no-op when already enabled")
+        void shouldBeIdempotent() {
+            Tenant tenant = Tenant.reconstitute(
+                    TenantId.generate(),
+                    "Test",
+                    validEmail(),
+                    validTaxId(),
+                    validPhone(),
+                    validBaileysAppName(),
+                    TenantStatus.ACTIVE,
+                    TenantPlan.FREE,
+                    true,
+                    true,
+                    true,
+                    Instant.now().minusSeconds(3600),
+                    Instant.now().minusSeconds(3600),
+                    null,
+                    0L
+            );
+            tenant.enableTwoFactorAuth();
+
+            assertThat(tenant.isTwoFactorEnabled()).isTrue();
+            assertThat(tenant.pullDomainEvents()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("should reject on a cancelled tenant")
+        void shouldRejectOnCancelled() {
+            Tenant tenant = tenantInStatus(TenantStatus.CANCELLED, true);
+
+            assertThatThrownBy(tenant::enableTwoFactorAuth)
+                    .isInstanceOf(TenantAlreadyCancelledException.class)
+                    .hasMessageContaining("enableTwoFactorAuth");
+        }
+    }
+
+    @Nested
+    @DisplayName("disableTwoFactorAuth()")
+    class DisableTwoFactor {
+
+        @Test
+        @DisplayName("should disable 2FA and publish event")
+        void shouldDisable() {
+            Tenant tenant = Tenant.reconstitute(
+                    TenantId.generate(),
+                    "Test",
+                    validEmail(),
+                    validTaxId(),
+                    validPhone(),
+                    validBaileysAppName(),
+                    TenantStatus.ACTIVE,
+                    TenantPlan.FREE,
+                    true,
+                    true,
+                    true,
+                    Instant.now().minusSeconds(3600),
+                    Instant.now().minusSeconds(3600),
+                    null,
+                    0L
+            );
+
+            tenant.disableTwoFactorAuth();
+
+            assertThat(tenant.isTwoFactorEnabled()).isFalse();
+
+            List<DomainEvent> events = tenant.pullDomainEvents();
+            assertThat(events).hasSize(1);
+            assertThat(events.get(0)).isInstanceOf(TenantTwoFactorAuthDisabledEvent.class);
+        }
+
+        @Test
+        @DisplayName("should be idempotent: no-op when already disabled")
+        void shouldBeIdempotent() {
+            Tenant tenant = fullyConfiguredTenant();
+
+            tenant.disableTwoFactorAuth();
+
+            assertThat(tenant.isTwoFactorEnabled()).isFalse();
+            assertThat(tenant.pullDomainEvents()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("should reject on a cancelled tenant")
+        void shouldRejectOnCancelled() {
+            Tenant tenant = tenantInStatus(TenantStatus.CANCELLED, true);
+
+            assertThatThrownBy(tenant::disableTwoFactorAuth)
+                    .isInstanceOf(TenantAlreadyCancelledException.class)
+                    .hasMessageContaining("disableTwoFactorAuth");
+        }
+    }
+
+    @Nested
+    @DisplayName("recordLastAccess(when)")
+    class RecordLastAccess {
+
+        @Test
+        @DisplayName("should update lastAccessAt to the given instant")
+        void shouldUpdateLastAccess() {
+            Tenant  tenant = fullyConfiguredTenant();
+            Instant accessMoment = Instant.parse("2026-06-10T15:30:00Z");
+
+            tenant.recordLastAccess(accessMoment);
+
+            assertThat(tenant.lastAccessAt()).isEqualTo(accessMoment);
+        }
+
+        @Test
+        @DisplayName("should NOT publish any domain event")
+        void shouldNotPublishEvent() {
+            Tenant tenant = fullyConfiguredTenant();
+
+            tenant.recordLastAccess(Instant.now());
+
+            assertThat(tenant.pullDomainEvents()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("should NOT update updatedAt (it is a separate metric)")
+        void shouldNotUpdateUpdatedAt() {
+            Tenant  tenant = fullyConfiguredTenant();
+            Instant beforeUpdatedAt = tenant.updatedAt();
+
+            tenant.recordLastAccess(Instant.now());
+
+            assertThat(tenant.updatedAt()).isEqualTo(beforeUpdatedAt);
+        }
+
+        @Test
+        @DisplayName("should reject null instant")
+        void shouldRejectNull() {
+            Tenant tenant = fullyConfiguredTenant();
+
+            assertThatThrownBy(() -> tenant.recordLastAccess(null))
+                    .isInstanceOf(NullPointerException.class)
+                    .hasMessageContaining("lastAccessAt");
+        }
+
+        @Test
+        @DisplayName("should reject on a cancelled tenant")
+        void shouldRejectOnCancelled() {
+            Tenant tenant = tenantInStatus(TenantStatus.CANCELLED, true);
+
+            assertThatThrownBy(() -> tenant.recordLastAccess(Instant.now()))
+                    .isInstanceOf(TenantAlreadyCancelledException.class)
+                    .hasMessageContaining("recordLastAccess");
+        }
+    }
 }
